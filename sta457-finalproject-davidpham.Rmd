@@ -1,0 +1,390 @@
+---
+title: "STA457 Final Project"
+author: "David Pham"
+date: "17/12/2021"
+output:
+  pdf_document: default
+  word_document: default
+header-includes: \usepackage{setspace}
+fontsize: 12pt
+---
+
+```{r, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(openintro)
+library(tidyverse)
+library(astsa)
+library(dplyr)
+library(tseries)
+library(forecast)
+library(sarima)
+library(MASS)
+library(ggplot2)
+library(lmtest)
+set.seed(1005349053)
+```
+
+# Abstract
+
+# Introduction
+**TODO: re-read this section and provide citations**
+\doublespacing
+Birth rates are a very interesting statistic to observe, as they can provide many insights about a country (and even the world), including economic status, education, social factors, and so much more. Throughout the years, birth rates have been slowly declining and are at their lowest since 1979 (). The PRB (Population Reference Bureau) suggests that fertility patterns in the U.S are primarily affected by not only economic recessions such as the current pandemic, but other factors including the technological and overall development of a country. We are interested in seeing if this claim and reasoning holds by using data of the past to forecast into the future. Hence, the purpose of this project is to provide an analysis, as well as developing a suitable model to forecast the number of monthly births in the U.S. To attempt this, we use the `birth` dataset in the `astsa` package in R, which contains 373 observations of monthly live births in the U.S from January 1948 to January 1979. Throughout this report, we will be observing the data and modifying it to achieve stationarity, picking a suitable (S)ARIMA model by using necessary diagnostics and model selection, and use this final model to forecast the claims made above. In order to do the last step, we will take the last 12 observations as our testing data, and perform one-step forecasts.
+
+```{r, include = FALSE, message=FALSE, echo=FALSE, warning=FALSE}
+# load in the data
+data <- as.data.frame(birth) %>%
+    rename(births = x)
+
+# create training and testing data
+births_train <- as.data.frame(data[1:361, ]) %>%
+    rename(births = 'data[1:361, ]')
+births_test <- as.data.frame(data[362:373, ]) %>%
+    rename(births = 'data[362:373, ]')
+
+# the actual time series
+births_train_ts <- ts(births_train, start = c(1948, 1), end = c(1978, 1), frequency = 12)
+births_full_ts <- ts(data, start = c(1948, 1), end = c(1979, 1), frequency = 12)
+```
+\singlespacing
+
+# Methods
+
+## Stationarity
+
+\doublespacing
+
+First, let us examine the initial time series plot of monthly births from 1948-1978. The last year is omitted since we are using that data as the testing data for forecasting.
+
+\singlespacing
+
+```{r, include = TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+# initial time series plot
+plot.ts(births_train_ts, main = "Time Series of Monthly U.S Births from 1948-1978", ylab = "Monthly U.S Births")
+```
+
+\doublespacing
+
+By first glance, we can observe that the data is not stationary, since the mean and variance of the time series seem to be changing over time. The upward trend of the first half of the data is presumably because of the baby boom (), while there are decreasing fluctuations in the second half. Moreover, there appears to be seasonality in the data due to roughly constant peaks throughout the series. We can also check the autocorrelation function to appropriately assert seasonality and non-stationarity.
+
+\singlespacing
+
+```{r, include = TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+# initial time series plot
+par(mfrow = c(1, 2))
+acf(births_train_ts, main = "ACF", lag.max = 150)
+pacf(births_train_ts, main = "PACF")
+```
+
+\doublespacing
+
+Upon looking at the ACF and PACF of the data, we can clearly see non-stationarity due to the general decreasing trend in the ACF, as well as the points spiking higher than the blue dotted range from both graphs. We will have to transform our data to make it stationary, as well as taking seasonality and trend into account.
+
+We will employ the Box-Cox Transformation to stabilize the variance, since it varies with time (). The variance of this time series is $1240.041$. Although this transformation is also commonly used for normalizing data, we do not necessarily have this problem here:
+
+\singlespacing
+
+```{r, include = TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+# histogram to show normality
+hist(births_train_ts, main = "Histogram of Monthly U.S Births", xlab = "# of Births")
+
+# length of ts
+n = 1:length(births_train_ts)
+# apply bc transformation and obtain lambda
+bc_transform <- boxcox(births_train_ts ~ n, lambda = seq(-2,1,1/10), plotit = FALSE)
+lambda = bc_transform$x[which.max(bc_transform$y)]
+births_bc <- (1/lambda)*((births_train_ts^lambda)-1)
+
+# differencing the data (at lag 12)
+diff_births <- diff(births_bc, 12)
+```
+
+```{r, include = TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+# variance of initial time series
+var(births_train_ts) # var = 1240.041
+
+# check variance of newly-transformed time series
+var(births_bc) # variance of 0.0013!
+
+# decompose(births_bc)
+
+# first and seasonal differences (lag 12 and lag 1)
+diff_births_final <- diff(diff_births, 1)
+var(diff_births) # var = 0.0001
+var(diff_births_final) # var = 9.0 x 10^-5
+
+# hypothesis test on stationarity
+adf.test(diff_births_final)
+```
+
+\doublespacing
+
+With the help of the `boxcox()` function, we transform our data with the equation $$y(\lambda) = \frac{y_{i}^{\lambda} - 1}{\lambda}$$ where $\lambda = -0.2$ (). Checking the variance of the newly-transformed data, it is $0.0013$! Finally, we will try to use differencing in order to stabilize the mean, and make our entire series stationary. Looking at the previous and updated ACFs/PACFs, as well as decomposing the data, there seems to be seasonality at lag 1 and 12; hence, we will take the seasonal difference, and then first difference ().
+
+After differencing at lag = 12, we see an even smaller variance (almost 0) once we difference even further at lag = 1. We also see significant improvements in the shape of our data:
+
+\singlespacing
+
+```{r, include = TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+# plot ts
+plot.ts(diff_births_final, main = "Data Transformed + Diff at lag = 12 and at lag = 1 Series",
+        ylab = "Monthly U.S Births")
+```
+
+\doublespacing
+
+After having detrended, deseasoned, normalizing, and stabilized the mean and variance of our data, we affirm that we have a stationary series. Additionally, we use the Augmented Dickey-Fuller (ADT) test for stationary hypothesis testing to obtain a p-value < 0.01; hence, we reject the null-hypothesis and assert that the series is stationary (). Finally, we will take a look at the final ACF and PACF, and determine a few model candidates.
+
+\singlespacing
+
+## Model Building
+
+```{r, include = TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+# acf/pacf of final stationary series
+par(mfrow = c(1, 2))
+acf(diff_births_final, main = "ACF", lag.max=50)
+pacf(diff_births_final, main = "PACF", lag.max=50)
+```
+
+\doublespacing
+
+Observing the ACF, it appears that at the seasons, the ACF *tails* off at lag $1s$ (s = 12). Furthermore, the PACF also tails off at lags $1s, 2s, 3s, 4s$; hence, these results seem to imply an SMA(1), where $P = 1, Q = 1, D = 1$ in the seasonal component. We took the seasonal and first difference, so $D = d = 1$.
+
+In the non-seasonal lags, we can see that the PACF is tailing off. Furthermore, if we ignore seasonal lags, the ACF cuts off after lag = 2, which suggests a non-seasonal MA(2) component (). Hence, we will test out a few SARIMA models, but our ideal guess is of the form $(0, 1, 2)(1, 1, 1)_{12}$.
+
+\singlespacing
+
+# Results
+
+## Model Selection and Diagnostics
+
+Here is a table of our 8 candidate SARIMA models:
+```{r include=TRUE, warning=FALSE, message=FALSE, echo = FALSE}
+# AICc function
+aicc <- function(model) {
+  n = model$nobs
+  m = length(model$coef)
+  aicc = model$aic + 2 * m * (m + 1)/(n - m - 1)
+  return(aicc)
+}
+
+# hard code values for table
+options(digits = 3)
+var = c('SARIMA(0,1,1)(0,1,0)[12]', 
+        'SARIMA(0,1,1)(0,1,1)[12]', 
+        'SARIMA(0,1,1)(1,1,0)[12]', 
+        'SARIMA(0,1,1)(1,1,1)[12]',
+        'SARIMA(0,1,2)(0,1,0)[12]', 
+        'SARIMA(0,1,2)(0,1,1)[12]', 
+        'SARIMA(0,1,2)(1,1,0)[12]', 
+        'SARIMA(0,1,2)(1,1,1)[12]')
+
+# AICc
+coef_0 = c(aicc(arima(diff_births_final,order=c(0,1,1),seasonal=list(order=c(0,1,0),period=12))),
+           aicc(arima(diff_births_final,order=c(0,1,1),seasonal=list(order=c(0,1,1),period=12))),
+           aicc(arima(diff_births_final,order=c(0,1,1),seasonal=list(order=c(1,1,0),period=12))),
+           aicc(arima(diff_births_final,order=c(0,1,1),seasonal=list(order=c(1,1,1),period=12))),
+           aicc(arima(diff_births_final,order=c(0,1,2),seasonal=list(order=c(0,1,0),period=12))),
+           aicc(arima(diff_births_final,order=c(0,1,2),seasonal=list(order=c(0,1,1),period=12))),
+           aicc(arima(diff_births_final,order=c(0,1,2),seasonal=list(order=c(1,1,0),period=12))),
+           aicc(arima(diff_births_final,order=c(0,1,2),seasonal=list(order=c(1,1,1),period=12))))
+
+# create the table
+table = cbind(var, round(coef_0, digits = 1))
+colnames(table) = c('Model', 'AICc')
+knitr::kable(table, align = c("r", "r"), caption="AICc Values for SARIMA Models")
+```
+
+\doublespacing
+
+It actually appears that the best three models are the SARIMA $(0,1,1)(1,1,1)_{12}$ (**we'll call this Model 1**), $(0,1,2)(1,1,1)_{12}$ (**Model 2**) and $(0,1,2)(0,1,1)_{12}$ (**Model 3**) as they have the lowest AICc values by a tiny margin. We will use these final models in our diagnostics.
+
+```{r, include = TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+# create the models
+model1 <- arima(births_bc, order=c(0,1,1), seasonal = list(order=c(1,1,1), period = 12)) # bad model
+model2 <- arima(births_bc, order=c(0,1,2), seasonal = list(order=c(1,1,1), period = 12)) # ok model
+
+# BEAUTIFUL.
+model3 <- arima(births_bc, order=c(0,1,2), seasonal = list(order=c(0,1,1), period=12)) # best model
+#checkresiduals(model1)
+
+#coeftest(model1)
+#coeftest(model2)
+
+# check that mean and variance of residuals are 0
+res1 = residuals(model1)
+#mean(res1)
+#var(res1)
+
+res2 = residuals(model2)
+#mean(res2)
+#var(res2)
+
+res3 = residuals(model3)
+#mean(res3)
+#var(res3)
+```
+
+## Model 1
+The mean and variance of the residuals are both almost 0. Upon plotting the residual diagnostics:
+
+```{r, include = TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+checkresiduals(model1)
+# q-q plot
+qqnorm(res1)
+qqline(res1,col ="blue")
+```
+
+Model 1 fails the Ljung-Box test, as the p-value of 0.007; hence we believe that the time series is autocorrelated by rejecting the null hypothesis. Furthermore, some of the lags go past the blue confidence band, which is not typically ideal for white noise residuals. In the Q-Q plot, the tails seem to deviate quite a bit from the blue line. Due to these reasons, we will scrap Model 1.
+
+## Model 2 and Model 3
+```{r, include = TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+checkresiduals(model2)
+# q-q plot
+qqnorm(res2)
+qqline(res2,col ="blue")
+```
+
+Model 2 and Model 3 are extremely similar, since they only differ by a seasonal autoregressive order. The Ljung-Box test gives us a p-value > 0.1 for both, where we fail to reject the null hypothesis; in other words, the series are not autocorrelated (which is what we want!). Furthermore, the residuals look like white noise in the ACF, and they look normally distributed. Most of the points on the Q-Q plot are also touching the blue line, with slight deviations in the tails. Overall, these two SARIMA models are good candidates, and we will need to test the significance of their parameters.
+
+## Interpretations, Forecasting, and Spectral Analysis
+
+After using the `coeftest()` function, we perform a z-test of the coefficients and obtain the following estimates, along with their p-values for Model 2 and 3:
+\newpage
+```{r, include = TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+# coeftest(model2)
+# coeftest(model3)
+
+# hard code values for table
+options(digits = 3)
+var = c('Model 2', 
+        'ma1', 
+        'ma2', 
+        'sar1',
+        'sma1', 
+        'Model 3', 
+        'ma1', 
+        'ma2', 'sma1')
+
+# Estimate
+coef_0 = c('', -0.4073, -0.1294, 0.0730, -0.8792, '', -0.4057, -0.1285, -0.8578)
+# standard error
+coef_1 = c('', 0.0518, 0.0482, 0.0645, 0.0376, '', 0.0518, 0.0481, 0.0354)
+# p-value
+coef_2 = c('', 0, 0.0073, 0.2578, 0, '', 0, 0.0076, 0)
+
+# create the table
+table = cbind(var, coef_0, coef_1, coef_2)
+colnames(table) = c('Coefficient', 'Estimate', 'Standard Error', 'P-Value')
+knitr::kable(table, align = c("r", "r"), caption="Coefficient Estimates and P-values for Model 2 & 3")
+```
+
+**TODO: MAKE TABLE**
+
+The estimates and p-values for both models are almost identical, with the exception of one coefficient: the seasonal autoregressive order. Since the p-value for it is way above our signficance threshold, we cannot claim that the coefficient is non-zero. Due to this, we have to concede Model 2 to Model 3 and have it as our final model. For the non-seasonal moving average coeffcients and the seasonal moving average coefficient, all three p-values are significant at the 0.01 alpha level. Hence, we can conclude that these coefficients are non-zero.
+
+Hence, the final model is Model 3, and its final equation is:
+$$(1-B)(1-B^{12})x_t = (1 - 0.4057_{0.0518}B - 0.1285_{0.0481}B^2)(1 - 0.8578_{0.0354}B^{12})w_t$$
+where the left side represents the product of the seasonal and first difference, and the right hand side is the product of the non-seasonal MA(2) model and the seasonal MA(1) with period 12.
+
+We will now forecast the data into the future 12 months, comparing it to the last 12 observations we had omitted.
+```{r, include = TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+# find z-score
+z_alpha_2 = qnorm(0.975, 0, 1)
+
+# 12 step-forecast
+forecaster <- predict(model3, n.ahead = 12)
+# upper and lower bounds
+U.tr = forecaster$pred + z_alpha_2*forecaster$se 
+L.tr = forecaster$pred - z_alpha_2*forecaster$se 
+pred.orig <- ((lambda*(forecaster$pred))+1)^(1/lambda)
+U = ((lambda*U.tr)+1)^(1/lambda)
+L = ((lambda*L.tr)+1)^(1/lambda)
+
+# plot series and forecasts
+ts.plot(births_full_ts, main = "Original Time Series with Forecasted Values",
+        ylab = "# of Monthly Births")
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed")
+points(pred.orig, col="red")
+
+# prediction intervals
+table1 <- data.frame(Lower=L,Upper=U,OBS=births_test)
+names(table1)<-c("Lower Bound","Upper Bound","Observed Value")
+table1
+
+# hard code values for table
+options(digits = 3)
+
+# Estimate
+coef_0 = L
+# standard error
+coef_1 = U
+# p-value
+coef_2 = births_test
+
+# create the table
+table = cbind(coef_0, coef_1, coef_2)
+colnames(table) = c('Lower Bound', 'Upper Bound', 'Observed Value')
+knitr::kable(table, align = c("r", "r"), caption="Prediction Intervals and Forecasted Values")
+```
+
+It looks like most of the observations from our testing data fall into their appropriate prediction interval. With 95% confidence, these values will have fallen in these ranges.
+
+Lastly, we will perform a spectral analysis to identify the first three predominant periods and obtain the respective confidence intervals.
+```{r include=TRUE, warning=FALSE, message=FALSE}
+# graph periodogram
+births.per <- mvspec(data, log = "no", main = "Periodogram of Monthly Births")
+
+det <- births.per$details
+
+# frequencies in order of descending spectrums
+peak_1 <- 0.0027
+peak_2 <- 0.0827
+peak_3 <- 0.0053
+
+# obtain 3 largest specs
+specs <- sort(births.per$spec, decreasing = TRUE)[c(1:3)]
+
+U = qchisq(0.025, 2) # 0.0506
+L = qchisq(0.975, 2) # 7.3778
+
+# C1:
+2*specs[1]/L # 23408
+2*specs[1]/U # 3410629
+
+# C2:
+2*specs[2]/L # 6457
+2*specs[2]/U # 940848
+
+# C3:
+2*specs[3]/L # 3329
+2*specs[3]/U # 485044
+
+# hard code values for table
+options(digits = 3)
+
+var = c("Peak 1", 'Peak 2', 'Peak 3')
+
+coef_00 = c(peak_1, peak_2, peak_3)
+coef_000 = c(1/peak_1, 1/peak_2, 1/peak_3)
+
+# lower bound
+coef_0 = c(23408, 6457, 3329)
+# standard error
+coef_1 = c(3410629, 940848, 485044)
+
+# create the table
+table = cbind(var, coef_00, round(coef_000, 0), coef_0, coef_1)
+colnames(table) = c('Peak #', 'Frequency', 'Period', 'Lower Bound', 'Upper Bound')
+knitr::kable(table, align = c("r", "r"), caption="Predominant Periods and Confidence Intervals")
+```
+
+For every dominant frequency, we are 95% confident that its corresponding spectrum lays within that interval.
+However, these confidence intervals are too wide to actually make use of, and so their significance is questionable.
+
+# Discussion
+
+In all, the original intention of this report was to analyze the U.S monthly births using data from the past to fit the most optimal time series model, and use it to forecast/predict values in the future. This was done by detrending, deseasoning, and differencing the data in order to produce a valid time series. Furthermore, we were able to forecast 10 of the 12 observations, where birth rates have considerably decreased in the later years, matching the original hypothesis and our testing data. 
+
+One of the main limitations is the seasonal ARIMA model choice. These models were instinctively chosen with visual inspection of the ACF/PACF, and so not every possible model combination was considered for the most optimal fit. Furthermore, we could not correctly forecast an entire year with our best model. Hence, there might be some extraneous factor that the model was not able to capture. Overall, we have done a great job, and it was very interesting to analyze the fluctuation of birth rates throughout the years.
